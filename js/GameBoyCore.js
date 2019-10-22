@@ -9553,10 +9553,7 @@ GameBoyCore.prototype.setupRTC = function() {
 	connection.ondatachannel = function(event) {
 		var linkChannel = event.channel
 		console.log('data channel created:', linkChannel)
-		linkChannel.onmessage = function(message) {
-			console.log(message)
-		}
-		self.gameLinkRTCChannel = linkChannel
+		self.setupChannel(linkChannel)
 	}
 
 	connection.onicecandidateerror = function(e) { console.error(e.type, e) }
@@ -9571,7 +9568,8 @@ GameBoyCore.prototype.createRTCOffer = function() {
 
 	return new Promise(function(resolve, reject) {
 		var connection = self.RTCConnection
-		self.gameLinkRTCChannel = connection.createDataChannel('game-link')
+		var channel = connection.createDataChannel('game-link')
+        self.setupChannel(channel)
 
 		connection.createOffer()
 		.then(function(offer) {
@@ -9619,4 +9617,13 @@ GameBoyCore.prototype.setRTCOffer = function(offer) {
 			}
 		}
 	})
+}
+GameBoyCore.prototype.setupChannel = function(channel) {
+    var self = this
+    
+    channel.onmessage = function(message) {
+        self.lastMessage = message.data
+        log(message.data)
+    }
+    self.gameLinkRTCChannel = channel
 }
