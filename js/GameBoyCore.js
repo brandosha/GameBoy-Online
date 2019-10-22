@@ -1,14 +1,19 @@
 "use strict";
- /*
-  JavaScript GameBoy Color Emulator
-  Copyright (C) 2010-2016 Grant Galitz
-
-  Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-  The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
+/* 
+ * JavaScript GameBoy Color Emulator
+ * Copyright (C) 2010 - 2012 Grant Galitz
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2 as published by the Free Software Foundation.
+ * The full license is available at http://www.gnu.org/licenses/gpl.html
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ */
 function GameBoyCore(canvas, ROMImage) {
 	//Params, etc...
 	this.canvas = canvas;						//Canvas DOM object for drawing out the graphics to.
@@ -5808,11 +5813,15 @@ GameBoyCore.prototype.executeIteration = function () {
 				this.interruptsRequested |= 0x8;
 				this.checkIRQMatching();
 			}
-			//Bit Shit Counter:
+			//Bit Shift Counter:
 			this.serialShiftTimer -= this.CPUTicks;
 			if (this.serialShiftTimer <= 0) {
 				this.serialShiftTimer = this.serialShiftTimerAllocated;
-				this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
+				console.log('reached link transfer zone - iteration, sending: ' + this.memory[0xFF01])
+				if (this.gameLinkRTCChannel) {
+					this.gameLinkRTCChannel.send(new Uint8Array(this.memory[0xFF01]).buffer)
+				}
+				this.memory[0xFF01] = this.memory[0xFF01] // ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
 			}
 		}
 		//End of iteration routine:
@@ -5978,11 +5987,15 @@ GameBoyCore.prototype.updateCore = function () {
 			this.interruptsRequested |= 0x8;
 			this.checkIRQMatching();
 		}
-		//Bit Shit Counter:
+		//Bit Shift Counter:
 		this.serialShiftTimer -= this.CPUTicks;
 		if (this.serialShiftTimer <= 0) {
 			this.serialShiftTimer = this.serialShiftTimerAllocated;
-			this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
+			console.log('reached link transfer zone - core, sending: ' + this.memory[0xFF01])
+			if (this.gameLinkRTCChannel) {
+				this.gameLinkRTCChannel.send(new Uint8Array(this.memory[0xFF01]).buffer)
+			}
+			this.memory[0xFF01] = this.memory[0xFF01] // ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
 		}
 	}
 }
@@ -6424,7 +6437,6 @@ GameBoyCore.prototype.initializeReferencesFromSaveState = function () {
 			this.OBJPalette = this.gbOBJColorizedPalette;
 			this.updateGBBGPalette = this.updateGBColorizedBGPalette;
 			this.updateGBOBJPalette = this.updateGBColorizedOBJPalette;
-
 		}
 		else {
 			this.BGPalette = this.gbBGPalette;
@@ -7587,7 +7599,6 @@ GameBoyCore.prototype.memoryReadJumpCompile = function () {
 						parentObj.memory[0xFF04] = (parentObj.memory[0xFF04] + (parentObj.DIVTicks >> 8)) & 0xFF;
 						parentObj.DIVTicks &= 0xFF;
 						return parentObj.memory[0xFF04];
-
 					}
 					break;
 				case 0xFF05:
@@ -9115,6 +9126,7 @@ GameBoyCore.prototype.recompileModelSpecificIOWriteHandling = function () {
 			if (((data & 0x1) == 0x1)) {
 				//Internal clock:
 				parentObj.memory[0xFF02] = (data & 0x7F);
+				console.log('beginning link transfer')
 				parentObj.serialTimer = ((data & 0x2) == 0) ? 4096 : 128;	//Set the Serial IRQ counter.
 				parentObj.serialShiftTimer = parentObj.serialShiftTimerAllocated = ((data & 0x2) == 0) ? 512 : 16;	//Set the transfer data shift counter.
 			}
@@ -9301,6 +9313,7 @@ GameBoyCore.prototype.recompileModelSpecificIOWriteHandling = function () {
 			if (((data & 0x1) == 0x1)) {
 				//Internal clock:
 				parentObj.memory[0xFF02] = (data & 0x7F);
+				console.log('beginning link transfer')
 				parentObj.serialTimer = 4096;	//Set the Serial IRQ counter.
 				parentObj.serialShiftTimer = parentObj.serialShiftTimerAllocated = 512;	//Set the transfer data shift counter.
 			}
@@ -9530,4 +9543,80 @@ GameBoyCore.prototype.getTypedArray = function (length, defaultValue, numberType
 		}
 	}
 	return arrayHandle;
+}
+// WebRTC game link emulation
+GameBoyCore.prototype.setupRTC = function() {
+	var self = this
+
+	var server = { urls: 'stun:stun.l.google.com:19302' }
+	var connection = new RTCPeerConnection({ iceServers: [server] })
+	connection.ondatachannel = function(event) {
+		var linkChannel = event.channel
+		console.log('data channel created:', linkChannel)
+		linkChannel.onmessage = function(message) {
+			console.log(message)
+		}
+		self.gameLinkRTCChannel = linkChannel
+	}
+
+	connection.onicecandidateerror = function(e) { console.error(e.type, e) }
+	connection.onconnectionstatechange = function(e) { console.log(e.type, connection.connectionState) }
+	connection.oniceconnectionstatechange = function(e) { console.log(e.type, connection.iceConnectionState) }
+	connection.onicegatheringstatechange = function(e) { console.log(e.type, connection.iceGatheringState) }
+
+	this.RTCConnection = connection
+}
+GameBoyCore.prototype.createRTCOffer = function() {
+	var self = this
+
+	return new Promise(function(resolve, reject) {
+		var connection = self.RTCConnection
+		self.gameLinkRTCChannel = connection.createDataChannel('game-link')
+
+		connection.createOffer()
+		.then(function(offer) {
+			connection.setLocalDescription(offer)
+		})
+
+		connection.onicecandidate = function(event) {
+			if (event.candidate === null) {
+				resolve()
+			}
+		}
+	})
+}
+GameBoyCore.prototype.setRTCAnswer = function(answer) {
+	if (this.RTCConnection.signalingState !== 'have-local-offer') return
+
+	var self = this
+	return new Promise(function(resolve) {
+		self.RTCConnection.setRemoteDescription(new RTCSessionDescription({
+			type:'answer',
+			sdp: answer
+		})).then(function() {
+			resolve()
+		})
+	})
+}
+GameBoyCore.prototype.setRTCOffer = function(offer) {
+	if (this.RTCConnection.signalingState !== 'stable') return
+
+	var connection = this.RTCConnection
+	return new Promise(function(resolve) {
+		connection.setRemoteDescription(new RTCSessionDescription({
+			type:'offer',
+			sdp: offer
+		})).then(function() {
+			connection.createAnswer()
+			.then(function(answer) {
+				connection.setLocalDescription(answer)
+			})
+		})
+	
+		connection.onicecandidate = function(event) {
+			if (event.candidate === null) {
+				resolve()
+			}
+		}
+	})
 }
