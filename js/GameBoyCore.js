@@ -9551,9 +9551,7 @@ GameBoyCore.prototype.setupRTC = function() {
 	var server = { urls: 'stun:stun.l.google.com:19302' }
 	var connection = new RTCPeerConnection({ iceServers: [server] })
 	connection.ondatachannel = function(event) {
-		var linkChannel = event.channel
-		console.log('data channel created:', linkChannel)
-		self.setupChannel(linkChannel)
+		self.setupChannel(event.channel)
 	}
 
 	connection.onicecandidateerror = function(e) { console.error(e.type, e) }
