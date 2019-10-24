@@ -5817,11 +5817,8 @@ GameBoyCore.prototype.executeIteration = function () {
 			this.serialShiftTimer -= this.CPUTicks;
 			if (this.serialShiftTimer <= 0) {
 				this.serialShiftTimer = this.serialShiftTimerAllocated;
-				console.log('reached link transfer zone - iteration, sending: ' + this.memory[0xFF01])
-				if (this.gameLinkRTCChannel) {
-					this.gameLinkRTCChannel.send(new Uint8Array(this.memory[0xFF01]).buffer)
-				}
-				this.memory[0xFF01] = this.memory[0xFF01] // ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
+				// console.log('reached link transfer zone - iteration, sending: ' + this.memory[0xFF01])
+				// this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
 			}
 		}
 		//End of iteration routine:
@@ -5991,11 +5988,8 @@ GameBoyCore.prototype.updateCore = function () {
 		this.serialShiftTimer -= this.CPUTicks;
 		if (this.serialShiftTimer <= 0) {
 			this.serialShiftTimer = this.serialShiftTimerAllocated;
-			console.log('reached link transfer zone - core, sending: ' + this.memory[0xFF01])
-			if (this.gameLinkRTCChannel) {
-				this.gameLinkRTCChannel.send(new Uint8Array(this.memory[0xFF01]).buffer)
-			}
-			this.memory[0xFF01] = this.memory[0xFF01] // ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
+			// console.log('reached link transfer zone - core, sending: ' + this.memory[0xFF01])
+			// this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
 		}
 	}
 }
@@ -9129,6 +9123,12 @@ GameBoyCore.prototype.recompileModelSpecificIOWriteHandling = function () {
 				console.log('beginning link transfer')
 				parentObj.serialTimer = ((data & 0x2) == 0) ? 4096 : 128;	//Set the Serial IRQ counter.
 				parentObj.serialShiftTimer = parentObj.serialShiftTimerAllocated = ((data & 0x2) == 0) ? 512 : 16;	//Set the transfer data shift counter.
+				if (parentObj.gameLinkRTCChannel && parentObj.gameLinkRTCChannel.readyState === 'open') {
+					parentObj.gameLinkRTCChannel.send(JSON.stringify({
+						transfer: parentObj.memoryHighRead(address),
+						address: address
+					}))
+				}
 			}
 			else {
 				//External clock:
@@ -9316,6 +9316,12 @@ GameBoyCore.prototype.recompileModelSpecificIOWriteHandling = function () {
 				console.log('beginning link transfer')
 				parentObj.serialTimer = 4096;	//Set the Serial IRQ counter.
 				parentObj.serialShiftTimer = parentObj.serialShiftTimerAllocated = 512;	//Set the transfer data shift counter.
+				if (parentObj.gameLinkRTCChannel && parentObj.gameLinkRTCChannel.readyState === 'open') {
+					parentObj.gameLinkRTCChannel.send(JSON.stringify({
+						transfer: parentObj.memoryHighRead(address),
+						address: address
+					}))
+				}
 			}
 			else {
 				//External clock:
@@ -9544,7 +9550,7 @@ GameBoyCore.prototype.getTypedArray = function (length, defaultValue, numberType
 	}
 	return arrayHandle;
 }
-// WebRTC game link emulation
+// WebRTC game link transfer emulation
 GameBoyCore.prototype.setupRTC = function() {
 	var self = this
 
@@ -9574,54 +9580,86 @@ GameBoyCore.prototype.createRTCOffer = function() {
 			connection.setLocalDescription(offer)
 		})
 
+		var candidates = []
 		connection.onicecandidate = function(event) {
 			if (event.candidate === null) {
-				resolve()
+				console.log('gameboy.setupRTC();gameboy.setRTCOffer(`' + connection.localDescription.sdp + '`, ' + JSON.stringify(candidates) + ')')
+				resolve(connection.localDescription.sdp)
+			} else {
+				candidates.push(event.candidate.toJSON())
 			}
 		}
 	})
 }
-GameBoyCore.prototype.setRTCAnswer = function(answer) {
+GameBoyCore.prototype.setRTCAnswer = function(answer, iceCandidates) {
 	if (this.RTCConnection.signalingState !== 'have-local-offer') return
 
-	var self = this
+	var connection = this.RTCConnection
 	return new Promise(function(resolve) {
-		self.RTCConnection.setRemoteDescription(new RTCSessionDescription({
-			type:'answer',
-			sdp: answer
-		})).then(function() {
-			resolve()
+		var icePromises = iceCandidates.map(function(iceCandidate) {
+			return connection.addIceCandidate(new RTCIceCandidate(iceCandidate))
+		})
+
+		Promise.all(icePromises).then(function() {
+			connection.setRemoteDescription(new RTCSessionDescription({
+				type:'answer',
+				sdp: answer
+			})).then(function() {
+				resolve()
+			})
 		})
 	})
 }
-GameBoyCore.prototype.setRTCOffer = function(offer) {
+GameBoyCore.prototype.setRTCOffer = function(offer, iceCandidates) {
 	if (this.RTCConnection.signalingState !== 'stable') return
 
 	var connection = this.RTCConnection
 	return new Promise(function(resolve) {
-		connection.setRemoteDescription(new RTCSessionDescription({
-			type:'offer',
-			sdp: offer
-		})).then(function() {
-			connection.createAnswer()
-			.then(function(answer) {
-				connection.setLocalDescription(answer)
-			})
+		var icePromises = iceCandidates.map(function(iceCandidate) {
+			return connection.addIceCandidate(new RTCIceCandidate(iceCandidate))
 		})
-	
-		connection.onicecandidate = function(event) {
-			if (event.candidate === null) {
-				resolve()
+
+		Promise.all(icePromises).then(function() {
+			connection.setRemoteDescription(new RTCSessionDescription({
+				type:'offer',
+				sdp: offer
+			})).then(function() {
+				connection.createAnswer()
+				.then(function(answer) {
+					connection.setLocalDescription(answer)
+				})
+			})
+
+			var candidates = []
+			connection.onicecandidate = function(event) {
+				if (event.candidate === null) {
+					console.log('gameboy.setRTCAnswer(`' + connection.localDescription.sdp + '`, ' + JSON.stringify(candidates) + ')')
+					resolve(connection.localDescription.sdp)
+				} else {
+					candidates.push(event.candidate.toJSON())
+				}
 			}
-		}
+		})
 	})
 }
 GameBoyCore.prototype.setupChannel = function(channel) {
-    var self = this
-    
+	var self = this
+
+	channel.binaryType = 'arraybuffer'
     channel.onmessage = function(message) {
-        self.lastMessage = message.data
-        log(message.data)
+		var messageObj = JSON.parse(message.data)
+		console.log('new message', messageObj)
+
+		if (typeof messageObj.transfer === 'number') {
+			var currentData = self.memoryHighRead(messageObj.address)
+			self.memoryHighWrite(messageObj.address, messageObj.transfer)
+			channel.send(JSON.stringify({
+				returnTransfer: currentData,
+				address: messageObj.address
+			}))
+		} else if (typeof messageObj.returnTransfer === 'number') {
+			self.memoryHighWrite(messageObj.address, messageObj.returnTransfer)
+		}
     }
     self.gameLinkRTCChannel = channel
 }
