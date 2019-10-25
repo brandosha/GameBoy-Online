@@ -5817,8 +5817,8 @@ GameBoyCore.prototype.executeIteration = function () {
 			this.serialShiftTimer -= this.CPUTicks;
 			if (this.serialShiftTimer <= 0) {
 				this.serialShiftTimer = this.serialShiftTimerAllocated;
-				// console.log('reached link transfer zone - iteration, sending: ' + this.memory[0xFF01])
-				// this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
+				console.log('reached link transfer zone - iteration')
+				this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
 			}
 		}
 		//End of iteration routine:
@@ -5988,8 +5988,8 @@ GameBoyCore.prototype.updateCore = function () {
 		this.serialShiftTimer -= this.CPUTicks;
 		if (this.serialShiftTimer <= 0) {
 			this.serialShiftTimer = this.serialShiftTimerAllocated;
-			// console.log('reached link transfer zone - core, sending: ' + this.memory[0xFF01])
-			// this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
+			console.log('reached link transfer zone - core')
+			this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
 		}
 	}
 }
@@ -9120,12 +9120,15 @@ GameBoyCore.prototype.recompileModelSpecificIOWriteHandling = function () {
 			if (((data & 0x1) == 0x1)) {
 				//Internal clock:
 				parentObj.memory[0xFF02] = (data & 0x7F);
-				console.log('beginning link transfer')
+				// console.log('beginning link transfer')
 				parentObj.serialTimer = ((data & 0x2) == 0) ? 4096 : 128;	//Set the Serial IRQ counter.
 				parentObj.serialShiftTimer = parentObj.serialShiftTimerAllocated = ((data & 0x2) == 0) ? 512 : 16;	//Set the transfer data shift counter.
-				if (parentObj.gameLinkRTCChannel && parentObj.gameLinkRTCChannel.readyState === 'open') {
+				if (
+					parentObj.gameLinkRTCChannel && 
+					parentObj.gameLinkRTCChannel.readyState === 'open'
+				) {
 					parentObj.gameLinkRTCChannel.send(JSON.stringify({
-						transfer: parentObj.memoryHighRead(address),
+						transfer: parentObj.memoryHighRead(0x1),
 						address: address
 					}))
 				}
@@ -9313,12 +9316,15 @@ GameBoyCore.prototype.recompileModelSpecificIOWriteHandling = function () {
 			if (((data & 0x1) == 0x1)) {
 				//Internal clock:
 				parentObj.memory[0xFF02] = (data & 0x7F);
-				console.log('beginning link transfer')
+				// console.log('beginning link transfer')
 				parentObj.serialTimer = 4096;	//Set the Serial IRQ counter.
 				parentObj.serialShiftTimer = parentObj.serialShiftTimerAllocated = 512;	//Set the transfer data shift counter.
-				if (parentObj.gameLinkRTCChannel && parentObj.gameLinkRTCChannel.readyState === 'open') {
+				if (
+					parentObj.gameLinkRTCChannel && 
+					parentObj.gameLinkRTCChannel.readyState === 'open'
+				) {
 					parentObj.gameLinkRTCChannel.send(JSON.stringify({
-						transfer: parentObj.memoryHighRead(address),
+						transfer: parentObj.memoryHighRead(0x1),
 						address: address
 					}))
 				}
@@ -9651,14 +9657,24 @@ GameBoyCore.prototype.setupChannel = function(channel) {
 		console.log('new message', messageObj)
 
 		if (typeof messageObj.transfer === 'number') {
-			var currentData = self.memoryHighRead(messageObj.address)
-			self.memoryHighWrite(messageObj.address, messageObj.transfer)
+			var transferData = self.memoryHighRead(0x01)
+			self.memoryHighWrite(0x01, messageObj.transfer)
 			channel.send(JSON.stringify({
-				returnTransfer: currentData,
+				returnTransfer: transferData,
 				address: messageObj.address
 			}))
+
+			var SC = self.memoryHighRead(messageObj.address)
+			self.memoryHighWrite(messageObj.address, SC & 1)
+
+			self.memoryHighWrite(0xF, 8)
 		} else if (typeof messageObj.returnTransfer === 'number') {
-			self.memoryHighWrite(messageObj.address, messageObj.returnTransfer)
+			self.memoryHighWrite(0x01, messageObj.returnTransfer)
+
+			var SC = self.memoryHighRead(messageObj.address)
+			self.memoryHighWrite(messageObj.address, SC & 3)
+
+			self.memoryHighWrite(0xF, 8)
 		}
     }
     self.gameLinkRTCChannel = channel
