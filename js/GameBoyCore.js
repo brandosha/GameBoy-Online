@@ -5817,8 +5817,9 @@ GameBoyCore.prototype.executeIteration = function () {
 			this.serialShiftTimer -= this.CPUTicks;
 			if (this.serialShiftTimer <= 0) {
 				this.serialShiftTimer = this.serialShiftTimerAllocated;
-				console.log('reached link transfer zone - iteration')
-				this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
+
+				if (!this.gameLinkConnected()) this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;
+				// this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
 			}
 		}
 		//End of iteration routine:
@@ -5988,8 +5989,9 @@ GameBoyCore.prototype.updateCore = function () {
 		this.serialShiftTimer -= this.CPUTicks;
 		if (this.serialShiftTimer <= 0) {
 			this.serialShiftTimer = this.serialShiftTimerAllocated;
-			console.log('reached link transfer zone - core')
-			this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
+			
+			if (!this.gameLinkConnected()) this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;
+			// this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
 		}
 	}
 }
@@ -9123,14 +9125,18 @@ GameBoyCore.prototype.recompileModelSpecificIOWriteHandling = function () {
 				// console.log('beginning link transfer')
 				parentObj.serialTimer = ((data & 0x2) == 0) ? 4096 : 128;	//Set the Serial IRQ counter.
 				parentObj.serialShiftTimer = parentObj.serialShiftTimerAllocated = ((data & 0x2) == 0) ? 512 : 16;	//Set the transfer data shift counter.
-				if (
-					parentObj.gameLinkRTCChannel && 
-					parentObj.gameLinkRTCChannel.readyState === 'open'
-				) {
+				if (parentObj.gameLinkConnected()) {
+					console.log('sent message', {
+						transfer: parentObj.memoryHighRead(0x1),
+						address: address
+					})
 					parentObj.gameLinkRTCChannel.send(JSON.stringify({
 						transfer: parentObj.memoryHighRead(0x1),
 						address: address
 					}))
+
+					setTimeout(window.pause, 0)
+					parentObj.timeSent = new Date().getTime()
 				}
 			}
 			else {
@@ -9316,17 +9322,20 @@ GameBoyCore.prototype.recompileModelSpecificIOWriteHandling = function () {
 			if (((data & 0x1) == 0x1)) {
 				//Internal clock:
 				parentObj.memory[0xFF02] = (data & 0x7F);
-				// console.log('beginning link transfer')
 				parentObj.serialTimer = 4096;	//Set the Serial IRQ counter.
 				parentObj.serialShiftTimer = parentObj.serialShiftTimerAllocated = 512;	//Set the transfer data shift counter.
-				if (
-					parentObj.gameLinkRTCChannel && 
-					parentObj.gameLinkRTCChannel.readyState === 'open'
-				) {
+				if (parentObj.gameLinkConnected()) {
+					console.log('sent message', {
+						transfer: parentObj.memoryHighRead(0x1),
+						address: address
+					})
 					parentObj.gameLinkRTCChannel.send(JSON.stringify({
 						transfer: parentObj.memoryHighRead(0x1),
 						address: address
 					}))
+
+					setTimeout(window.pause, 0)
+					parentObj.timeSent = new Date().getTime()
 				}
 			}
 			else {
@@ -9654,28 +9663,39 @@ GameBoyCore.prototype.setupChannel = function(channel) {
 	channel.binaryType = 'arraybuffer'
     channel.onmessage = function(message) {
 		var messageObj = JSON.parse(message.data)
-		console.log('new message', messageObj)
+		console.log('recieved message', messageObj)
 
 		if (typeof messageObj.transfer === 'number') {
-			var transferData = self.memoryHighRead(0x01)
-			self.memoryHighWrite(0x01, messageObj.transfer)
+			var transferData = self.memory[0xFF01]
+			self.memory[0xFF01] = messageObj.transfer
+			console.log('sent message', {
+				returnTransfer: transferData,
+				address: messageObj.address
+			})
 			channel.send(JSON.stringify({
 				returnTransfer: transferData,
 				address: messageObj.address
 			}))
 
-			var SC = self.memoryHighRead(messageObj.address)
-			self.memoryHighWrite(messageObj.address, SC & 1)
-
-			self.memoryHighWrite(0xF, 8)
+			self.memoryHighWrite(messageObj.address, self.memory[messageObj.address] & 1)
+			// self.memory[messageObj.address] &= 1
+			self.interruptsRequested |= 0x8;
+			self.checkIRQMatching();
 		} else if (typeof messageObj.returnTransfer === 'number') {
-			self.memoryHighWrite(0x01, messageObj.returnTransfer)
+			self.memory[0xFF01] = messageObj.returnTransfer
 
-			var SC = self.memoryHighRead(messageObj.address)
-			self.memoryHighWrite(messageObj.address, SC & 3)
+			self.memoryHighWrite(messageObj.address, self.memory[messageObj.address] & 3)
+			// self.memory[messageObj.address] &= 3
+			self.interruptsRequested |= 0x8;
+			self.checkIRQMatching();
 
-			self.memoryHighWrite(0xF, 8)
+			console.log('ping in iterations:', Math.ceil((new Date().getTime() - self.timeSent) / 8)) 
+
+			setTimeout(window.run, 0)
 		}
     }
-    self.gameLinkRTCChannel = channel
+	self.gameLinkRTCChannel = channel
+}
+GameBoyCore.prototype.gameLinkConnected = function() {
+	return this.gameLinkRTCChannel && this.gameLinkRTCChannel.readyState === 'open'
 }
