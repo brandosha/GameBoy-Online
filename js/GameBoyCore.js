@@ -5718,6 +5718,8 @@ GameBoyCore.prototype.channel4UpdateCache = function () {
 }
 GameBoyCore.prototype.run = function () {
 	//The preprocessing before the actual iteration loop:
+	if (this.waitingForSerialResponse) return
+
 	if ((this.stopEmulator & 2) == 0) {
 		if ((this.stopEmulator & 1) == 1) {
 			if (!this.CPUStopped) {
@@ -5754,6 +5756,20 @@ GameBoyCore.prototype.run = function () {
 		}
 	}
 }
+
+function asyncWhile(condition, loop) {
+	return new Promise(function (resolve) {
+		function inner(condition, loop) {
+			// console.log("async while", condition())
+			if (condition()) {
+				loop()
+				setTimeout(inner, 0, condition, loop)
+			} else resolve()
+		}
+		inner(condition, loop)
+	})
+}
+
 GameBoyCore.prototype.executeIteration = function () {
 	//Iterate the interpreter loop:
 	var opcodeToExecute = 0;
@@ -5818,8 +5834,20 @@ GameBoyCore.prototype.executeIteration = function () {
 			if (this.serialShiftTimer <= 0) {
 				this.serialShiftTimer = this.serialShiftTimerAllocated;
 
-				if (!this.gameLinkConnected()) this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;
-				// this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
+				if (this.gameLinkConnected()) {
+					this.waitingForSerialResponse = true
+
+					console.log('sent message', {
+						transfer: this.memory[0xFF01]
+					})
+					this.gameLinkRTCChannel.send(JSON.stringify({
+						transfer: this.memory[0xFF01]
+					}))
+
+					this.memory[0xFF02] &= 3
+					
+					this.timeSent = new Date().getTime()
+				} else this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01; //We could shift in actual link data here if we were to implement such!!!
 			}
 		}
 		//End of iteration routine:
@@ -5990,8 +6018,20 @@ GameBoyCore.prototype.updateCore = function () {
 		if (this.serialShiftTimer <= 0) {
 			this.serialShiftTimer = this.serialShiftTimerAllocated;
 			
-			if (!this.gameLinkConnected()) this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;
-			// this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01;	//We could shift in actual link data here if we were to implement such!!!
+			if (this.gameLinkConnected()) {
+				this.waitingForSerialResponse = true
+
+				console.log('sent message', {
+					transfer: this.memory[0xFF01]
+				})
+				this.gameLinkRTCChannel.send(JSON.stringify({
+					transfer: this.memory[0xFF01]
+				}))
+
+				this.memory[0xFF02] &= 3
+				
+				this.timeSent = new Date().getTime()
+			} else this.memory[0xFF01] = ((this.memory[0xFF01] << 1) & 0xFE) | 0x01; //We could shift in actual link data here if we were to implement such!!!	
 		}
 	}
 }
@@ -9125,7 +9165,7 @@ GameBoyCore.prototype.recompileModelSpecificIOWriteHandling = function () {
 				// console.log('beginning link transfer')
 				parentObj.serialTimer = ((data & 0x2) == 0) ? 4096 : 128;	//Set the Serial IRQ counter.
 				parentObj.serialShiftTimer = parentObj.serialShiftTimerAllocated = ((data & 0x2) == 0) ? 512 : 16;	//Set the transfer data shift counter.
-				if (parentObj.gameLinkConnected()) {
+				/*if (parentObj.gameLinkConnected()) {
 					console.log('sent message', {
 						transfer: parentObj.memoryHighRead(0x1),
 						address: address
@@ -9137,7 +9177,7 @@ GameBoyCore.prototype.recompileModelSpecificIOWriteHandling = function () {
 
 					setTimeout(window.pause, 0)
 					parentObj.timeSent = new Date().getTime()
-				}
+				}*/
 			}
 			else {
 				//External clock:
@@ -9324,19 +9364,7 @@ GameBoyCore.prototype.recompileModelSpecificIOWriteHandling = function () {
 				parentObj.memory[0xFF02] = (data & 0x7F);
 				parentObj.serialTimer = 4096;	//Set the Serial IRQ counter.
 				parentObj.serialShiftTimer = parentObj.serialShiftTimerAllocated = 512;	//Set the transfer data shift counter.
-				if (parentObj.gameLinkConnected()) {
-					console.log('sent message', {
-						transfer: parentObj.memoryHighRead(0x1),
-						address: address
-					})
-					parentObj.gameLinkRTCChannel.send(JSON.stringify({
-						transfer: parentObj.memoryHighRead(0x1),
-						address: address
-					}))
-
-					setTimeout(window.pause, 0)
-					parentObj.timeSent = new Date().getTime()
-				}
+				
 			}
 			else {
 				//External clock:
@@ -9661,7 +9689,7 @@ GameBoyCore.prototype.setupChannel = function(channel) {
 	var self = this
 
 	channel.binaryType = 'arraybuffer'
-    channel.onmessage = function(message) {
+	channel.onmessage = function(message) {
 		var messageObj = JSON.parse(message.data)
 		console.log('recieved message', messageObj)
 
@@ -9669,31 +9697,35 @@ GameBoyCore.prototype.setupChannel = function(channel) {
 			var transferData = self.memory[0xFF01]
 			self.memory[0xFF01] = messageObj.transfer
 			console.log('sent message', {
-				returnTransfer: transferData,
-				address: messageObj.address
+				returnTransfer: transferData
 			})
 			channel.send(JSON.stringify({
-				returnTransfer: transferData,
-				address: messageObj.address
+				returnTransfer: transferData
 			}))
 
-			self.memoryHighWrite(messageObj.address, self.memory[messageObj.address] & 1)
+			self.memory[0xFF02] &= 1
+			// self.memoryHighWrite(0x01, self.memory[messageObj.address] & 1)
 			// self.memory[messageObj.address] &= 1
 			self.interruptsRequested |= 0x8;
 			self.checkIRQMatching();
 		} else if (typeof messageObj.returnTransfer === 'number') {
 			self.memory[0xFF01] = messageObj.returnTransfer
 
-			self.memoryHighWrite(messageObj.address, self.memory[messageObj.address] & 3)
+			self.memoryHighWrite(0x01, self.memory[messageObj.address] & 3)
 			// self.memory[messageObj.address] &= 3
+			// self.stopEmulator |= 0x2
 			self.interruptsRequested |= 0x8;
 			self.checkIRQMatching();
 
+			self.waitingForSerialResponse = false
+
 			console.log('ping in iterations:', Math.ceil((new Date().getTime() - self.timeSent) / 8)) 
 
-			setTimeout(window.run, 0)
+			// window.run()
+
+			// setTimeout(window.run, 0)
 		}
-    }
+	}
 	self.gameLinkRTCChannel = channel
 }
 GameBoyCore.prototype.gameLinkConnected = function() {
