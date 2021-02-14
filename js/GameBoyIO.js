@@ -1,4 +1,5 @@
 "use strict";
+var runloop = null
 var gameboy = null;						//GameBoyCore object.
 var gbRunInterval = null;				//GameBoyCore Timer
 var settings = [						//Some settings.
@@ -38,6 +39,7 @@ function run() {
 			gbRunInterval = setInterval(function () {
 				if (!document.hidden && !document.msHidden && !document.mozHidden && !document.webkitHidden) {
 					gameboy.run();
+					typeof runloop === "function" && runloop();
 				}
 			}, settings[6]);
 		}
